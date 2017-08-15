@@ -2,7 +2,7 @@
 # build a platform or a module
 #
 #  Copyright (c) 2014, Hewlett-Packard Development Company, L.P.<BR>
-#  Copyright (c) 2007 - 2016, Intel Corporation. All rights reserved.<BR>
+#  Copyright (c) 2007 - 2017, Intel Corporation. All rights reserved.<BR>
 #
 #  This program and the accompanying materials
 #  are licensed and made available under the terms and conditions of the BSD License
@@ -54,7 +54,7 @@ import Common.GlobalData as GlobalData
 # Version and Copyright
 VersionNumber = "0.60" + ' ' + gBUILD_VERSION
 __version__ = "%prog Version " + VersionNumber
-__copyright__ = "Copyright (c) 2007 - 2016, Intel Corporation  All rights reserved."
+__copyright__ = "Copyright (c) 2007 - 2017, Intel Corporation  All rights reserved."
 
 ## standard targets of build command
 gSupportedTarget = ['all', 'genc', 'genmake', 'modules', 'libraries', 'fds', 'clean', 'cleanall', 'cleanlib', 'run']
@@ -989,7 +989,6 @@ class Build():
                 self.PostbuildScript = PostbuildList[0]
                 self.Postbuild = ' '.join(PostbuildList)
                 self.Postbuild += self.PassCommandOption(self.BuildTargetList, self.ArchList, self.ToolChainList)
-                #self.LanuchPostbuild()
             else:
                 EdkLogger.error("Postbuild", POSTBUILD_ERROR, "the postbuild script %s is not exist.\n If you'd like to disable the Postbuild process, please use the format: -D POSTBUILD=\"\" " %(PostbuildList[0]))
 
@@ -1040,7 +1039,7 @@ class Build():
                 Process = Popen(args, stdout=PIPE, stderr=PIPE)
             else:
                 args = ' && '.join((self.Prebuild, 'env > ' + PrebuildEnvFile))
-                Process = Popen(args, stdout=PIPE, stderr=PIPE, shell=True, executable="/bin/bash")
+                Process = Popen(args, stdout=PIPE, stderr=PIPE, shell=True)
 
             # launch two threads to read the STDOUT and STDERR
             EndOfProcedure = Event()
@@ -1076,13 +1075,13 @@ class Build():
                 os.environ.update(dict(envs))
             EdkLogger.info("\n- Prebuild Done -\n")
 
-    def LanuchPostbuild(self):
+    def LaunchPostbuild(self):
         if self.Postbuild:
             EdkLogger.info("\n- Postbuild Start -\n")
             if sys.platform == "win32":
                 Process = Popen(self.Postbuild, stdout=PIPE, stderr=PIPE)
             else:
-                Process = Popen(self.Postbuild, stdout=PIPE, stderr=PIPE, shell=True, executable="/bin/bash")
+                Process = Popen(self.Postbuild, stdout=PIPE, stderr=PIPE, shell=True)
             # launch two threads to read the STDOUT and STDERR
             EndOfProcedure = Event()
             EndOfProcedure.clear()
@@ -2331,7 +2330,7 @@ def Main():
 
     if ReturnCode == 0:
         try:
-            MyBuild.LanuchPostbuild()
+            MyBuild.LaunchPostbuild()
             Conclusion = "Done"
         except:
             Conclusion = "Failed"

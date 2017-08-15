@@ -1,7 +1,7 @@
 /** @file
   CPU MP Initialize Library common functions.
 
-  Copyright (c) 2016, Intel Corporation. All rights reserved.<BR>
+  Copyright (c) 2016 - 2017, Intel Corporation. All rights reserved.<BR>
   This program and the accompanying materials
   are licensed and made available under the terms and conditions of the BSD License
   which accompanies this distribution.  The full text of the license may be found at
@@ -18,8 +18,11 @@ EFI_GUID mCpuInitMpLibHobGuid = CPU_INIT_MP_LIB_HOB_GUID;
 
 /**
   The function will check if BSP Execute Disable is enabled.
-  DxeIpl may have enabled Execute Disable for BSP,
-  APs need to get the status and sync up the settings.
+
+  DxeIpl may have enabled Execute Disable for BSP, APs need to
+  get the status and sync up the settings.
+  If BSP's CR0.Paging is not set, BSP execute Disble feature is
+  not working actually.
 
   @retval TRUE      BSP Execute Disable is enabled.
   @retval FALSE     BSP Execute Disable is not enabled.
@@ -33,23 +36,30 @@ IsBspExecuteDisableEnabled (
   CPUID_EXTENDED_CPU_SIG_EDX  Edx;
   MSR_IA32_EFER_REGISTER      EferMsr;
   BOOLEAN                     Enabled;
+  IA32_CR0                    Cr0;
 
   Enabled = FALSE;
-  AsmCpuid (CPUID_EXTENDED_FUNCTION, &Eax, NULL, NULL, NULL);
-  if (Eax >= CPUID_EXTENDED_CPU_SIG) {
-    AsmCpuid (CPUID_EXTENDED_CPU_SIG, NULL, NULL, NULL, &Edx.Uint32);
+  Cr0.UintN = AsmReadCr0 ();
+  if (Cr0.Bits.PG != 0) {
     //
-    // CPUID 0x80000001
-    // Bit 20: Execute Disable Bit available.
+    // If CR0 Paging bit is set
     //
-    if (Edx.Bits.NX != 0) {
-      EferMsr.Uint64 = AsmReadMsr64 (MSR_IA32_EFER);
+    AsmCpuid (CPUID_EXTENDED_FUNCTION, &Eax, NULL, NULL, NULL);
+    if (Eax >= CPUID_EXTENDED_CPU_SIG) {
+      AsmCpuid (CPUID_EXTENDED_CPU_SIG, NULL, NULL, NULL, &Edx.Uint32);
       //
-      // MSR 0xC0000080
-      // Bit 11: Execute Disable Bit enable.
+      // CPUID 0x80000001
+      // Bit 20: Execute Disable Bit available.
       //
-      if (EferMsr.Bits.NXE != 0) {
-        Enabled = TRUE;
+      if (Edx.Bits.NX != 0) {
+        EferMsr.Uint64 = AsmReadMsr64 (MSR_IA32_EFER);
+        //
+        // MSR 0xC0000080
+        // Bit 11: Execute Disable Bit enable.
+        //
+        if (EferMsr.Bits.NXE != 0) {
+          Enabled = TRUE;
+        }
       }
     }
   }
@@ -372,13 +382,13 @@ ApInitializeSync (
 
   CpuMpData = (CPU_MP_DATA *) Buffer;
   //
-  // Sync BSP's MTRR table to AP
-  //
-  MtrrSetAllMtrrs (&CpuMpData->MtrrTable);
-  //
   // Load microcode on AP
   //
   MicrocodeDetect (CpuMpData);
+  //
+  // Sync BSP's MTRR table to AP
+  //
+  MtrrSetAllMtrrs (&CpuMpData->MtrrTable);
 }
 
 /**
@@ -424,6 +434,8 @@ CollectProcessorCount (
   IN CPU_MP_DATA         *CpuMpData
   )
 {
+  UINTN                  Index;
+
   //
   // Send 1st broadcast IPI to APs to wakeup APs
   //
@@ -455,6 +467,12 @@ CollectProcessorCount (
     // Enable x2APIC on BSP
     //
     SetApicMode (LOCAL_APIC_MODE_X2APIC);
+    //
+    // Set BSP/Aps state to IDLE
+    //
+    for (Index = 0; Index < CpuMpData->CpuCount; Index++) {
+      SetApState (&CpuMpData->CpuData[Index], CpuStateIdle);
+    }
   }
   DEBUG ((DEBUG_INFO, "APIC MODE is %d\n", GetApicMode ()));
   //
@@ -732,6 +750,8 @@ FillExchangeInfoData (
   ExchangeInfo->CpuMpData       = CpuMpData;
 
   ExchangeInfo->EnableExecuteDisable = IsBspExecuteDisableEnabled ();
+
+  ExchangeInfo->InitializeFloatingPointUnitsAddress = (UINTN)InitializeFloatingPointUnits;
 
   //
   // Get the BSP's data of GDT and IDT
@@ -1354,6 +1374,10 @@ MpInitLibInitialize (
   // Store BSP's MTRR setting
   //
   MtrrGetAllMtrrs (&CpuMpData->MtrrTable);
+  //
+  // Enable the local APIC for Virtual Wire Mode.
+  //
+  ProgramVirtualWireMode ();
 
   if (OldCpuMpData == NULL) {
     if (MaxLogicalProcessorNumber > 1) {

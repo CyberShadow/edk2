@@ -62,7 +62,10 @@ gMakeTypeMap = {"MSFT":"nmake", "GCC":"gmake"}
 
 
 ## Build rule configuration file
-gDefaultBuildRuleFile = 'Conf/build_rule.txt'
+gDefaultBuildRuleFile = 'build_rule.txt'
+
+## Tools definition configuration file
+gDefaultToolsDefFile = 'tools_def.txt'
 
 ## Build rule default version
 AutoGenReqBuildRuleVerNum = "0.1"
@@ -413,7 +416,7 @@ class WorkspaceAutoGen(AutoGen):
                             if HasTokenSpace:
                                 if (PcdItem.TokenCName, PcdItem.TokenSpaceGuidCName) == (TokenCName, TokenSpaceGuidCName):
                                     PcdDatumType = PcdItem.DatumType
-                                    NewValue = self._BuildOptionPcdValueFormat(TokenSpaceGuidCName, TokenCName, PcdDatumType, pcdvalue)
+                                    NewValue = BuildOptionPcdValueFormat(TokenSpaceGuidCName, TokenCName, PcdDatumType, pcdvalue)
                                     FoundFlag = True
                             else:
                                 if PcdItem.TokenCName == TokenCName:
@@ -422,7 +425,7 @@ class WorkspaceAutoGen(AutoGen):
                                             TokenSpaceGuidCNameList.append(PcdItem.TokenSpaceGuidCName)
                                             PcdDatumType = PcdItem.DatumType
                                             TokenSpaceGuidCName = PcdItem.TokenSpaceGuidCName
-                                            NewValue = self._BuildOptionPcdValueFormat(TokenSpaceGuidCName, TokenCName, PcdDatumType, pcdvalue)
+                                            NewValue = BuildOptionPcdValueFormat(TokenSpaceGuidCName, TokenCName, PcdDatumType, pcdvalue)
                                             FoundFlag = True
                                         else:
                                             EdkLogger.error(
@@ -501,6 +504,22 @@ class WorkspaceAutoGen(AutoGen):
                                 SourcePcdDict['FixedAtBuild'].append((BuildData.Pcds[key].TokenCName, BuildData.Pcds[key].TokenSpaceGuidCName))
                 else:
                     pass
+            #
+            # A PCD can only use one type for all source modules
+            #
+            for i in SourcePcdDict_Keys:
+                for j in SourcePcdDict_Keys:
+                    if i != j:
+                        IntersectionList = list(set(SourcePcdDict[i]).intersection(set(SourcePcdDict[j])))
+                        if len(IntersectionList) > 0:
+                            EdkLogger.error(
+                            'build',
+                            FORMAT_INVALID,
+                            "Building modules from source INFs, following PCD use %s and %s access method. It must be corrected to use only one access method." % (i, j),
+                            ExtraData="%s" % '\n\t'.join([str(P[1]+'.'+P[0]) for P in IntersectionList])
+                            )
+                    else:
+                        pass
 
             #
             # intersection the BinaryPCD for Mixed PCD
@@ -642,14 +661,34 @@ class WorkspaceAutoGen(AutoGen):
         self._BuildCommand = None
 
         #
-        # Create BuildOptions Macro & PCD metafile.
+        # Create BuildOptions Macro & PCD metafile, also add the Active Platform and FDF file.
         #
         content = 'gCommandLineDefines: '
         content += str(GlobalData.gCommandLineDefines)
         content += os.linesep
         content += 'BuildOptionPcd: '
         content += str(GlobalData.BuildOptionPcd)
+        content += os.linesep
+        content += 'Active Platform: '
+        content += str(self.Platform)
+        content += os.linesep
+        if self.FdfFile:
+            content += 'Flash Image Definition: '
+            content += str(self.FdfFile)
         SaveFileOnChange(os.path.join(self.BuildDir, 'BuildOptions'), content, False)
+
+        #
+        # Create PcdToken Number file for Dynamic/DynamicEx Pcd.
+        #
+        PcdTokenNumber = 'PcdTokenNumber: '
+        if Pa.PcdTokenNumber:
+            if Pa.DynamicPcdList:
+                for Pcd in Pa.DynamicPcdList:
+                    PcdTokenNumber += os.linesep
+                    PcdTokenNumber += str((Pcd.TokenCName, Pcd.TokenSpaceGuidCName))
+                    PcdTokenNumber += ' : '
+                    PcdTokenNumber += str(Pa.PcdTokenNumber[Pcd.TokenCName, Pcd.TokenSpaceGuidCName])
+        SaveFileOnChange(os.path.join(self.BuildDir, 'PcdTokenNumber'), PcdTokenNumber, False)
 
         #
         # Get set of workspace metafiles
@@ -678,31 +717,6 @@ class WorkspaceAutoGen(AutoGen):
                 print >> file, f
         return True
 
-    def _BuildOptionPcdValueFormat(self, TokenSpaceGuidCName, TokenCName, PcdDatumType, Value):
-        if PcdDatumType == 'VOID*':
-            if Value.startswith('L'):
-                if not Value[1]:
-                    EdkLogger.error('build', OPTION_VALUE_INVALID, 'For Void* type PCD, when specify the Value in the command line, please use the following format: "string", L"string", B"{...}"')
-                Value = Value[0] + '"' + Value[1:] + '"'
-            elif Value.startswith('B'):
-                if not Value[1]:
-                    EdkLogger.error('build', OPTION_VALUE_INVALID, 'For Void* type PCD, when specify the Value in the command line, please use the following format: "string", L"string", B"{...}"')
-                Value = Value[1:]
-            else:
-                if not Value[0]:
-                    EdkLogger.error('build', OPTION_VALUE_INVALID, 'For Void* type PCD, when specify the Value in the command line, please use the following format: "string", L"string", B"{...}"')
-                Value = '"' + Value + '"'
-
-        IsValid, Cause = CheckPcdDatum(PcdDatumType, Value)
-        if not IsValid:
-            EdkLogger.error('build', FORMAT_INVALID, Cause, ExtraData="%s.%s" % (TokenSpaceGuidCName, TokenCName))
-        if PcdDatumType == 'BOOLEAN':
-            Value = Value.upper()
-            if Value == 'TRUE' or Value == '1':
-                Value = '1'
-            elif Value == 'FALSE' or Value == '0':
-                Value = '0'
-        return  Value
 
     def _GetMetaFiles(self, Target, Toolchain, Arch):
         AllWorkSpaceMetaFiles = set()
@@ -721,9 +735,18 @@ class WorkspaceAutoGen(AutoGen):
         AllWorkSpaceMetaFiles.add(self.MetaFile.Path)
 
         #
+        # add build_rule.txt & tools_def.txt
+        #
+        AllWorkSpaceMetaFiles.add(os.path.join(GlobalData.gConfDirectory, gDefaultBuildRuleFile))
+        AllWorkSpaceMetaFiles.add(os.path.join(GlobalData.gConfDirectory, gDefaultToolsDefFile))
+
         # add BuildOption metafile
         #
         AllWorkSpaceMetaFiles.add(os.path.join(self.BuildDir, 'BuildOptions'))
+
+        # add PcdToken Number file for Dynamic/DynamicEx Pcd
+        #
+        AllWorkSpaceMetaFiles.add(os.path.join(self.BuildDir, 'PcdTokenNumber'))
 
         for Arch in self.ArchList:
             Platform = self.BuildDatabase[self.MetaFile, Arch, Target, Toolchain]
@@ -2735,10 +2758,7 @@ class ModuleAutoGen(AutoGen):
         if self._FixedAtBuildPcds:
             return self._FixedAtBuildPcds
         for Pcd in self.ModulePcdList:
-            if self.IsLibrary:
-                if not (Pcd.Pending == False and Pcd.Type == "FixedAtBuild"):
-                    continue
-            elif Pcd.Type != "FixedAtBuild":
+            if Pcd.Type != "FixedAtBuild":
                 continue
             if Pcd not in self._FixedAtBuildPcds:
                 self._FixedAtBuildPcds.append(Pcd)
@@ -3917,6 +3937,13 @@ class ModuleAutoGen(AutoGen):
                 else:
                     continue
                 PcdValue = ''
+                if Pcd.DatumType == 'BOOLEAN':
+                    BoolValue = Pcd.DefaultValue.upper()
+                    if BoolValue == 'TRUE':
+                        Pcd.DefaultValue = '1'
+                    elif BoolValue == 'FALSE':
+                        Pcd.DefaultValue = '0'
+
                 if Pcd.DatumType != 'VOID*':
                     HexFormat = '0x%02x'
                     if Pcd.DatumType == 'UINT16':
